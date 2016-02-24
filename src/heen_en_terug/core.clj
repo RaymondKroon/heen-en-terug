@@ -1,4 +1,5 @@
 (ns heen-en-terug.core
+  (:require [clojure.core.async :as async])
   (:import [java.security SecureRandom])
   (:gen-class))
 
@@ -37,6 +38,15 @@
     (if card
       (recur more-cards (remove-card remaining-deck card))
       remaining-deck)))
+
+(defn create-shuffler [deck n]
+  "returns channel which returns n shuffled decks"
+  (let [c (async/chan 10)]
+    (async/go-loop [i 0]
+      (when (< i n)
+        (async/>! c (secure-shuffle deck))
+        (recur (inc i))))
+    c))
 
 (defn deal [deck players n-cards]
   (loop [[player & more-players] players
@@ -107,13 +117,14 @@
         deck (apply remove-cards (create-deck) play-cards)
         n-cards (count cards)
         other-players [:b :c :d :e]
-        all-players (concat [:a] other-players )]
+        all-players (concat [:a] other-players )
+        shuffler (create-shuffler deck sample-n)]
     (loop [i 0
            n-ok 0
            stats (into {} (map #(vector % 0) (range 0 n-cards)))]
       (if (< i sample-n)
         (let [player-cards (merge {:a play-cards}
-                               (deal (secure-shuffle deck) other-players  n-cards))
+                               (deal (async/<!! shuffler) other-players  n-cards))
               game-result (play-game all-players n-cards :a player-cards trump)]
           (if game-result
             (recur (inc i) (inc n-ok) (merge-with + stats {(get game-result :a 0) 1} ))
