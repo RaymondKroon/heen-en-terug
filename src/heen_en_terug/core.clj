@@ -43,9 +43,10 @@
   "returns channel which returns n shuffled decks"
   (let [c (async/chan 10)]
     (async/go-loop [i 0]
-      (when (< i n)
-        (async/>! c (secure-shuffle deck))
-        (recur (inc i))))
+      (if (< i n)
+        (do (async/>! c (secure-shuffle deck))
+            (recur (inc i)))
+        (async/close! c)))
     c))
 
 (defn deal [deck players n-cards]
@@ -111,6 +112,17 @@
       tricks-won))
   )
 
+(defn create-table [stats n-ok shuffler play-cards all-players n-cards first-player trump]
+  (async/go-loop [deck (async/<! shuffler)]
+    (let [player-cards (merge {:a play-cards}
+                              (deal deck (rest all-players) n-cards))
+              game-result (play-game all-players n-cards :a player-cards trump)]
+          (when game-result
+            (swap! stats #(merge-with + % {(get game-result :a 0) 1}))
+            (swap! n-ok inc)))
+    (when-let [deck (async/<! shuffler)]
+      (recur deck))))
+
 (defn sample-game [sample-n trump & cards]
   "ie. (sample-game 10000 nil [:clubs :king] [:clubs :2])"
   (let [play-cards (mapv #(apply create-card %) cards)
@@ -118,18 +130,12 @@
         n-cards (count cards)
         other-players [:b :c :d :e]
         all-players (concat [:a] other-players )
-        shuffler (create-shuffler deck sample-n)]
-    (loop [i 0
-           n-ok 0
-           stats (into {} (map #(vector % 0) (range 0 n-cards)))]
-      (if (< i sample-n)
-        (let [player-cards (merge {:a play-cards}
-                               (deal (async/<!! shuffler) other-players  n-cards))
-              game-result (play-game all-players n-cards :a player-cards trump)]
-          (if game-result
-            (recur (inc i) (inc n-ok) (merge-with + stats {(get game-result :a 0) 1} ))
-            (recur (inc i) n-ok stats)))
-        {:total n-ok :odds (into {} (map (fn [[k v]] [k (float (/ v n-ok))]) stats))}))))
+        shuffler (create-shuffler deck sample-n)
+        stats (atom {})
+        n-ok (atom 0)
+        table (create-table stats n-ok shuffler play-cards all-players n-cards :a trump)]
+    (async/<!! table)
+    {:total @n-ok :odds (into {} (map (fn [[k v]] [k (float (/ v @n-ok))]) @stats))}))
 
 (defn test-secure-randoms [n]
   (let [sr (SecureRandom.)
