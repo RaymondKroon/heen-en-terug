@@ -112,16 +112,17 @@
       tricks-won))
   )
 
-(defn create-table [stats n-ok shuffler play-cards all-players n-cards first-player trump]
-  (async/go-loop [deck (async/<! shuffler)]
-    (let [player-cards (merge {:a play-cards}
-                              (deal deck (rest all-players) n-cards))
-              game-result (play-game all-players n-cards :a player-cards trump)]
-          (when game-result
-            (swap! stats #(merge-with + % {(get game-result :a 0) 1}))
-            (swap! n-ok inc)))
-    (when-let [deck (async/<! shuffler)]
-      (recur deck))))
+(defn play-table [shuffler play-cards all-players n-cards first-player trump]
+  (let [c (async/chan)]
+    (async/go-loop [deck (async/<! shuffler)]
+      (let [player-cards (merge {:a play-cards}
+                                (deal deck (rest all-players) n-cards))
+            game-result (play-game all-players n-cards :a player-cards trump)]
+        (when game-result (async/>! c game-result))
+        (if-let [deck (async/<! shuffler)]
+          (recur deck)
+          (async/close! c))))
+    c))
 
 (defn sample-game [sample-n trump & cards]
   "ie. (sample-game 10000 nil [:clubs :king] [:clubs :2])"
@@ -131,11 +132,15 @@
         other-players [:b :c :d :e]
         all-players (concat [:a] other-players )
         shuffler (create-shuffler deck sample-n)
-        stats (atom {})
-        n-ok (atom 0)
-        table (create-table stats n-ok shuffler play-cards all-players n-cards :a trump)]
-    (async/<!! table)
-    {:total @n-ok :odds (into {} (map (fn [[k v]] [k (float (/ v @n-ok))]) @stats))}))
+        games (async/merge
+               (repeatedly 1 #(play-table shuffler play-cards all-players n-cards :a trump)) sample-n)
+        [n-ok stats] (async/<!!
+                      (async/reduce
+                       (fn [[n-ok stats] game-result]
+                         [(inc n-ok) (merge-with + stats {(get game-result :a 0) 1})])
+                       [0 {}]
+                       games))]
+    {:total n-ok :odds (into {} (map (fn [[k v]] [k (float (/ v n-ok))]) stats))}))
 
 (defn test-secure-randoms [n]
   (let [sr (SecureRandom.)
