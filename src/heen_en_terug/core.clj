@@ -41,12 +41,13 @@
 
 (defn create-shuffler [deck n]
   "returns channel which returns n shuffled decks"
-  (let [c (async/chan 10)]
-    (async/go-loop [i 0]
-      (if (< i n)
-        (do (async/>! c (secure-shuffle deck))
-            (recur (inc i)))
-        (async/close! c)))
+  (let [c (async/chan 1000)]
+    (future
+      (loop [i 0]
+        (if (< i n)
+          (do (async/>!! c (secure-shuffle deck))
+              (recur (inc i)))
+          (async/close! c))))
     c))
 
 (defn deal [deck players n-cards]
@@ -113,15 +114,16 @@
   )
 
 (defn play-table [shuffler play-cards all-players n-cards first-player trump]
-  (let [c (async/chan)]
-    (async/go-loop [deck (async/<! shuffler)]
-      (let [player-cards (merge {:a play-cards}
-                                (deal deck (rest all-players) n-cards))
-            game-result (play-game all-players n-cards :a player-cards trump)]
-        (when game-result (async/>! c game-result))
-        (if-let [deck (async/<! shuffler)]
-          (recur deck)
-          (async/close! c))))
+  (let [c (async/chan 1000)]
+    (future
+      (loop [deck (async/<!! shuffler)]
+        (let [player-cards (merge {:a play-cards}
+                                  (deal deck (rest all-players) n-cards))
+              game-result (play-game all-players n-cards :a player-cards trump)]
+          (when game-result (async/>!! c game-result))
+          (if-let [deck (async/<!! shuffler)]
+            (recur deck)
+            (async/close! c)))))
     c))
 
 (defn sample-game [sample-n trump & cards]
