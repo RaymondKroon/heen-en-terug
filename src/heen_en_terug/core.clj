@@ -12,22 +12,41 @@
     (java.util.Collections/shuffle al ^SecureRandom secure-generator )
     (clojure.lang.RT/vector (.toArray al))))
 
-(defrecord Card [suit rank name])
+(defrecord Card [id suit rank name])
 
 (defmethod print-method Card [v ^java.io.Writer w]
   (.write w (str (.suit v) (.name v))))
 
-(def suits [:spades :clubs :hearts :diamonds])
-(def cards {:2 0, :3 1, :4 2, :5 3, :6 4, :7 5, :8 6, :9 7, :10 8
+(def all-suits [:spades :clubs :hearts :diamonds])
+(def all-cards {:2 0, :3 1, :4 2, :5 3, :6 4, :7 5, :8 6, :9 7, :10 8
             :jack 9, :queen 10, :king 11, :ace 12})
 
-(defn create-deck []
-  (for [suit suits
-        [name rank] cards]
-    (->Card suit rank name)))
+(def suits-encode
+  {:spades 0 :clubs 1 :hearts 2 :diamonds 3})
+
+(defn create-counter [start-at]
+  (let [i (atom start-at)]
+    (fn []
+      (let [cur @i]
+        (swap! i inc)
+        cur))))
 
 (defn create-card [suit name]
-  (->Card suit (name cards) name))
+  (let [rank (get all-cards name  -999)]
+    (->Card (+ rank (* 13 (suit suits-encode))) suit rank name)))
+
+(defn create-deck []
+  (for [suit all-suits
+        [name rank] all-cards]
+    (create-card suit name)))
+
+(def id->card
+  (let [idx (into {} (map #(vector (:id %1) %1) (create-deck)))]
+    (fn [id] (get idx id))))
+
+(def card->id
+  (let [idx (into {} (map #(vector [(:suit %1) (:name %1)] (:id %1)) (create-deck)))]
+    (fn [suit name] (get idx [suit name]))))
 
 (defn remove-card [deck card]
   (filter (fn [c] (not= card c)) deck))
@@ -83,13 +102,13 @@
   (let [order (take (count players) (drop-while #(not= % starting-player) (cycle players)))
         first-player (first order)
         ;_ (print first-player)
-        first-card  (-> players-cards (first-player players-cards) (get trick-i))
+        first-card  (-> players-cards (get first-player players-cards) (get trick-i))
         requested-suit #{(:suit first-card)}]
     (loop [[player & more-players] (drop 1 order)
            winning-player-card [(first order) first-card]
            valid? true]
       (if (and valid? player)
-        (let [player-cards (player players-cards)
+        (let [player-cards (get players-cards player)
               played-card (get player-cards trick-i)
               nw-player-card (compare-cards winning-player-card [player played-card] trump)
               nw-valid? (and valid?
@@ -113,19 +132,59 @@
       tricks-won))
   )
 
-(defn play-table [shuffler play-cards all-players n-cards first-player trump]
+(defn position? [n-players starting-player player]
+  (+ 1 (mod (- player starting-player) n-players)))
+
+(defn play-table [shuffler players n-cards trump]
   (let [c (async/chan 1000)]
     (future
       (loop [deck (async/<!! shuffler)]
-        (let [player-cards (merge {:a play-cards}
-                                  (deal deck (rest all-players) n-cards))
-              game-result (play-game all-players n-cards :a player-cards trump)]
-          (when game-result (async/>!! c game-result))
+        (let [player-cards (deal deck players n-cards)]
+          (doseq [starting-player players]
+            (when-let [game-result (play-game players n-cards starting-player player-cards trump)]
+              (doseq [p players]
+                (async/>!! c {:trump trump
+                              :position (position? (count players) starting-player p)
+                              :cards (get player-cards p)
+                              :tricks (get game-result p 0)}))))
           (if-let [deck (async/<!! shuffler)]
             (recur deck)
             (async/close! c)))))
     c))
 
+(defn create-players [n]
+  (range 0 n))
+
+(defn apply-game [stats {:keys [trump position cards tricks]}]
+  (let [k [trump position cards]]
+    (-> stats
+        (update-in [k tricks] (fnil inc 0))
+        (update-in [k :total] (fnil inc 0)))))
+
+(defn sample-all [n-samples n-cards n-players]
+  (let [deck (create-deck)
+        players (create-players n-players)
+        shuffler (create-shuffler deck n-samples)
+        games (async/merge (doall
+                            (map #(play-table shuffler players n-cards %)
+                                 [nil :spades :clubs :hearts :diamonds])) 1000)
+        results (async/<!!
+                 (async/reduce
+                  (fn [stats game-result]
+                    (apply-game stats game-result))
+                  {} games))]
+    results))
+
+(defn get-result [results trump position & cards]
+  (let [cards* (mapv #(apply create-card %) cards)]
+    (when-let [stats (get results [trump position cards*])]
+      (println stats)
+      (let [total (:total stats)]
+        (into {:total total}
+               (map (fn [[k v]] [k (float (/ v total))])
+                    (filter (fn [[k v]] (not (keyword? k))) stats)))))))
+
+;; broken
 (defn sample-game [sample-n trump & cards]
   "ie. (sample-game 10000 nil [:clubs :king] [:clubs :2])"
   (let [play-cards (mapv #(apply create-card %) cards)
