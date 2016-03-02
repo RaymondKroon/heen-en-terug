@@ -1,5 +1,6 @@
 (ns heen-en-terug.core
-  (:require [clojure.core.async :as async])
+  (:require [clojure.core.async :as async]
+            [clojure.java.jdbc :as jdbc])
   (:import [java.security SecureRandom])
   (:gen-class))
 
@@ -23,13 +24,6 @@
 
 (def suits-encode
   {:spades 0 :clubs 1 :hearts 2 :diamonds 3})
-
-(defn create-counter [start-at]
-  (let [i (atom start-at)]
-    (fn []
-      (let [cur @i]
-        (swap! i inc)
-        cur))))
 
 (defn create-card [suit name]
   (let [rank (get all-cards name  -999)]
@@ -87,14 +81,16 @@
       (= (:suit card-b) trump) player-card-b
       :else player-card-a)))
 
-(defn valid-play? [requested-suit trump winning-card played-card remaining-suits]
-
+(defn valid-play? [requested-suit trump winning-card played-card remaining-cards]
   (cond
-    (and (not (requested-suit (:suit played-card))) (some requested-suit remaining-suits)) false
+    (and (not (requested-suit (:suit played-card)))
+         (some requested-suit (map :suit remaining-cards))) false
     (and (not (requested-suit trump))
          (= trump (:suit winning-card))
          (= trump (:suit played-card))
-         (> (:rank winning-card) (:rank played-card))) false
+         (> (:rank winning-card) (:rank played-card))
+         (not (every? #(and (= trump (:suit %1))
+                            (> (:rank winning-card) (:rank %1))) remaining-cards))) false
     :else true))
 
 (defn play-trick [players trick-i starting-player players-cards trump]
@@ -112,8 +108,9 @@
               played-card (get player-cards trick-i)
               nw-player-card (compare-cards winning-player-card [player played-card] trump)
               nw-valid? (and valid?
-                             (valid-play? requested-suit trump (second winning-player-card) played-card
-                                          (map :suit (drop 1 player-cards))))]
+                             (or (= player (first nw-player-card))
+                              (valid-play? requested-suit trump (second winning-player-card) played-card
+                                           (drop 1 player-cards))))]
           (recur more-players nw-player-card nw-valid?)
           )
         (when valid?
@@ -161,19 +158,38 @@
         (update-in [k tricks] (fnil inc 0))
         (update-in [k :total] (fnil inc 0)))))
 
+(def results-db {:subprotocol "sqlite"
+                 :subname "result-data/db.sqlite"})
+
+
+(defn chan->db [play-chan db]
+  (let [batches (async/pipe play-chan (async/chan 1 (partition-all 100000)))]
+    (loop [batch (async/<!! batches)]
+      (when batch
+        (let [entries (map (fn [{:keys [trump position cards tricks]}]
+                             {:trump (get suits-encode trump)
+                              :position position
+                              :cards (clojure.string/join "," (map :id cards))
+                              :tricks tricks}) batch)]
+          (apply jdbc/insert! db :play_result entries))
+        (recur (async/<!! batches))))))
+
+(defn chan->aggr [play-chan]
+  (let [results (async/<!!
+                 (async/reduce
+                  (fn [stats game-result]
+                    (apply-game stats game-result))
+                  {} play-chan))]
+    results))
+
 (defn sample-all [n-samples n-cards n-players]
   (let [deck (create-deck)
         players (create-players n-players)
         shuffler (create-shuffler deck n-samples)
         games (async/merge (doall
                             (map #(play-table shuffler players n-cards %)
-                                 [nil :spades :clubs :hearts :diamonds])) 1000)
-        results (async/<!!
-                 (async/reduce
-                  (fn [stats game-result]
-                    (apply-game stats game-result))
-                  {} games))]
-    results))
+                                 [nil :spades :clubs :hearts :diamonds])) 1000)]
+    (chan->db games results-db)))
 
 (defn get-result [results trump position & cards]
   (let [cards* (mapv #(apply create-card %) cards)]
@@ -217,3 +233,23 @@
   (time (test-secure-randoms 10000000) ))
 
 ;(time (test-secure-randoms 10000000) )
+
+
+(comment "select
+  t.trump,
+  t.cards,
+  t.position,
+  t.tricks,
+  t.trick_occurences,
+  n.total_occurences,
+  t.trick_occurences*1.0 / n.total_occurences odds
+from
+(select trump, position, cards, tricks,
+  count(pr.tricks) trick_occurences
+from play_result pr
+group by trump, position, cards, tricks) t
+join
+(select trump, position, cards, count(pr.tricks) total_occurences
+from play_result pr
+group by trump, position, cards) n
+on t.trump = n.trump and t.position = n.position and t.cards = n.cards")

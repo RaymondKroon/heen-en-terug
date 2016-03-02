@@ -31,6 +31,22 @@
                           :spades)]
     (is (= result nil))))
 
+(deftest test-illegal-double-trump
+  (let [result (play-game [:a :b :c] 2 :a
+                          {:a [(create-card :clubs :king) (create-card :clubs :2)]
+                           :b [(create-card :spades :3) (create-card :clubs :queen)]
+                           :c [(create-card :spades :2) (create-card :spades :10)]}
+                          :spades)]
+    (is (= result nil))))
+
+(deftest test-legal-lower-trump
+  (let [result (play-game [:a :b :c] 2 :a
+                          {:a [(create-card :clubs :king) (create-card :clubs :2)]
+                           :b [(create-card :spades :7) (create-card :clubs :queen)]
+                           :c [(create-card :spades :5) (create-card :spades :4)]}
+                          :spades)]
+    (is (= result {:b 1 :c 1}))))
+
 (deftest deal-test
   (let [deck (into [] (range 0 52))
         result (deal deck [:a :b :c] 3)]
