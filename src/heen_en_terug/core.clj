@@ -22,16 +22,16 @@
 (def all-cards {:2 0, :3 1, :4 2, :5 3, :6 4, :7 5, :8 6, :9 7, :10 8
             :jack 9, :queen 10, :king 11, :ace 12})
 
-(def suits-encode
-  {:spades 0 :clubs 1 :hearts 2 :diamonds 3})
+(defn encode-suit [suit]
+  (get {:spades 1 :clubs 2 :hearts 3 :diamonds 4} suit 0))
 
 (defn create-card [suit name]
   (let [rank (get all-cards name  -999)]
-    (->Card (+ rank (* 13 (suit suits-encode))) suit rank name)))
+    (->Card (+ rank (* 13 (encode-suit suit))) suit rank name)))
 
 (defn create-deck []
   (for [suit all-suits
-        [name rank] all-cards]
+        [name _] all-cards]
     (create-card suit name)))
 
 (def id->card
@@ -52,15 +52,17 @@
       (recur more-cards (remove-card remaining-deck card))
       remaining-deck)))
 
-(defn create-shuffler [deck n]
-  "returns channel which returns n shuffled decks"
-  (let [c (async/chan 1000)]
+(defn create-shuffler [deck shuffle-time]
+  "returns channel which returns shuffled decks for shuffle-time seconds"
+  (let [c (async/chan 1000)
+        has-time? (volatile! true)]
+    (async/go
+      (async/<! (async/timeout (* 1000 shuffle-time)))
+      (vreset! has-time? false))
     (future
-      (loop [i 0]
-        (if (< i n)
-          (do (async/>!! c (secure-shuffle deck))
-              (recur (inc i)))
-          (async/close! c))))
+      (while @has-time?
+        (async/>!! c (secure-shuffle deck)))
+      (async/close! c))
     c))
 
 (defn deal [deck players n-cards]
@@ -123,7 +125,7 @@
          tricks-won {}
          starting-player first-player]
     (if (< trick-i n-cards)
-      (if-let [[player card] (play-trick players trick-i starting-player player-cards trump)]
+      (if-let [[player _] (play-trick players trick-i starting-player player-cards trump)]
         (recur (inc trick-i) (update-in tricks-won [player] (fnil inc 0)) player)
         nil)
       tricks-won))
@@ -155,62 +157,81 @@
 (defn apply-game [stats {:keys [trump position cards tricks]}]
   (let [k [trump position cards]]
     (-> stats
-        (update-in [k tricks] (fnil inc 0))
+        (update-in [k :per-trick tricks] (fnil inc 0))
         (update-in [k :total] (fnil inc 0)))))
 
 (def results-db {:subprotocol "sqlite"
                  :subname "result-data/db.sqlite"})
 
 
-(defn chan->db [play-chan db]
-  (let [batches (async/pipe play-chan (async/chan 1 (partition-all 100000)))]
-    (loop [batch (async/<!! batches)]
-      (when batch
-        (let [entries (map (fn [{:keys [trump position cards tricks]}]
-                             {:trump (get suits-encode trump)
-                              :position position
-                              :cards (clojure.string/join "," (map :id cards))
-                              :tricks tricks}) batch)]
-          (apply jdbc/insert! db :play_result entries))
-        (recur (async/<!! batches))))))
-
 (defn chan->aggr [play-chan]
   (let [results (async/<!!
-                 (async/reduce
-                  (fn [stats game-result]
-                    (apply-game stats game-result))
-                  {} play-chan))]
+                  (async/reduce
+                    (fn [stats game-result]
+                      (apply-game stats game-result))
+                    {} play-chan))]
     results))
 
-(defn sample-all [n-samples n-cards n-players]
+(defn encode-cards [cards]
+  (clojure.string/join "," (map :id cards)))
+
+(defn chan->db [play-chan n-players db]
+  ;beter reduces, zodat er maar 1 keer per run weggeschreven hoeft te worden
+  (let [stats (chan->aggr play-chan)
+        entries (mapcat
+                  (fn [[[trump position cards] {:keys [per-trick total]}]]
+                    (map (fn [[trick v]]
+                           {:n_players n-players
+                            :trump (encode-suit trump)
+                            :position position
+                            :cards (encode-cards cards)
+                            :tricks trick
+                            :tricks_occurrences v
+                            :total_occurrences total})
+                         per-trick))
+                  stats)]
+    (apply jdbc/insert! db :play_result entries))
+  :ok)
+
+(defn sample-all [sample-time n-cards n-players]
   (let [deck (create-deck)
         players (create-players n-players)
-        shuffler (create-shuffler deck n-samples)
+        shuffler (create-shuffler deck sample-time)
         games (async/merge (doall
                             (map #(play-table shuffler players n-cards %)
                                  [nil :spades :clubs :hearts :diamonds])) 1000)]
-    (chan->db games results-db)))
+    (chan->db games n-players results-db)))
 
-(defn get-result [results trump position & cards]
-  (let [cards* (mapv #(apply create-card %) cards)]
-    (when-let [stats (get results [trump position cards*])]
-      (println stats)
-      (let [total (:total stats)]
-        (into {:total total}
-               (map (fn [[k v]] [k (float (/ v total))])
-                    (filter (fn [[k v]] (not (keyword? k))) stats)))))))
+(defn get-odds [db n-players trump & cards]
+  (let [cards* (encode-cards (mapv #(apply create-card %) cards))
+        trump* (encode-suit trump)
+        _ (println cards*)
+        _ (println trump*)]
+    (jdbc/query db ["select
+  n_players,
+  trump,
+  position,
+  cards,
+  tricks,
+  sum(tricks_occurrences) trick_occurences,
+  sum(total_occurrences) total_occurences,
+  1.0 * sum(tricks_occurrences) / sum(total_occurrences) odds
+from play_result
+where trump = ?
+and cards = ?
+group by trump, position, cards, tricks" trump* cards*])))
 
 ;; broken
-(defn sample-game [sample-n trump & cards]
+(defn sample-game [sample-time trump & cards]
   "ie. (sample-game 10000 nil [:clubs :king] [:clubs :2])"
   (let [play-cards (mapv #(apply create-card %) cards)
         deck (apply remove-cards (create-deck) play-cards)
         n-cards (count cards)
         other-players [:b :c :d :e]
         all-players (concat [:a] other-players )
-        shuffler (create-shuffler deck sample-n)
+        shuffler (create-shuffler deck sample-time)
         games (async/merge
-               (repeatedly 1 #(play-table shuffler play-cards all-players n-cards :a trump)) sample-n)
+               (repeatedly 1 #(play-table shuffler play-cards all-players n-cards :a trump)) sample-time)
         [n-ok stats] (async/<!!
                       (async/reduce
                        (fn [[n-ok stats] game-result]
