@@ -205,21 +205,21 @@
 (defn get-odds [db n-players trump & cards]
   (let [cards* (encode-cards (mapv #(apply create-card %) cards))
         trump* (encode-suit trump)
-        _ (println cards*)
-        _ (println trump*)]
-    (jdbc/query db ["select
-  n_players,
-  trump,
+        results (jdbc/query db ["select
   position,
-  cards,
   tricks,
-  sum(tricks_occurrences) trick_occurences,
-  sum(total_occurrences) total_occurences,
-  1.0 * sum(tricks_occurrences) / sum(total_occurrences) odds
+  sum(tricks_occurrences) n,
+  sum(total_occurrences) total
 from play_result
 where trump = ?
 and cards = ?
-group by trump, position, cards, tricks" trump* cards*])))
+and n_players = ?
+group by trump, position, cards, tricks" trump* cards* n-players])]
+    (reduce (fn [acc {:keys [position tricks n total]}]
+              (-> acc
+                  (assoc-in [position tricks] (float (with-precision 3 (/ (BigDecimal. n) total))))
+                  (assoc-in [position :sample-size] total)))
+            {:cards cards :trump trump} results)))
 
 ;; broken
 (defn sample-game [sample-time trump & cards]
@@ -254,23 +254,3 @@ group by trump, position, cards, tricks" trump* cards*])))
   (time (test-secure-randoms 10000000) ))
 
 ;(time (test-secure-randoms 10000000) )
-
-
-(comment "select
-  t.trump,
-  t.cards,
-  t.position,
-  t.tricks,
-  t.trick_occurences,
-  n.total_occurences,
-  t.trick_occurences*1.0 / n.total_occurences odds
-from
-(select trump, position, cards, tricks,
-  count(pr.tricks) trick_occurences
-from play_result pr
-group by trump, position, cards, tricks) t
-join
-(select trump, position, cards, count(pr.tricks) total_occurences
-from play_result pr
-group by trump, position, cards) n
-on t.trump = n.trump and t.position = n.position and t.cards = n.cards")
