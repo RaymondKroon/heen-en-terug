@@ -217,9 +217,9 @@ and n_players = ?
 group by trump, position, cards, tricks" trump* cards* n-players])]
     (reduce (fn [acc {:keys [position tricks n total]}]
               (-> acc
-                  (assoc-in [position tricks] (float (with-precision 3 (/ (BigDecimal. n) total))))
-                  (assoc-in [position :sample-size] total)))
-            {:cards cards :trump trump} results)))
+                  (assoc-in [:odds position tricks] (float (with-precision 3 (/ (BigDecimal. n) total))))
+                  (assoc-in [:sample-size position] total)))
+            {:cards cards :trump trump :n-players n-players} results)))
 
 ;; broken
 (defn sample-game [sample-time trump & cards]
