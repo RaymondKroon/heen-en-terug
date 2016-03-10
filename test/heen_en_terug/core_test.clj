@@ -51,3 +51,27 @@
   (let [deck (into [] (range 0 52))
         result (deal deck [:a :b :c] 3)]
     (is (= {:a [0 1 2] :b [3 4 5] :c [6 7 8]} result))))
+
+(deftest assert-1-on-1-with-trump-3
+  (let [player-card (create-card :clubs :3)
+        remaining-cards (remove-card (create-deck) player-card)
+        games (map #(play-game [:a :b] 1 :a {:a [player-card] :b [%]} :clubs) remaining-cards)]
+    (is (= 40 (count (filter #(= 1 (get % :a 0)) games))))))
+
+(deftest assert-t1-on-1-with-trump-ace
+  (let [player-card (create-card :clubs :ace)
+        remaining-cards (remove-card (create-deck) player-card)
+        games (map #(play-game [:a :b] 1 :a {:a [player-card] :b [%]} :clubs) remaining-cards)]
+    (is (= 51 (count (filter #(= 1 (get % :a 0)) games))))))
+
+(deftest assert-t1-on-1-without-trump-2
+  (let [player-card (create-card :clubs :2)
+        remaining-cards (remove-card (create-deck) player-card)
+        games (map #(play-game [:a :b] 1 :a {:a [player-card] :b [%]} nil) remaining-cards)]
+    (is (= 39 (count (filter #(= 1 (get % :a 0)) games))))))
+
+(deftest assert-t1-on-1-with-non-trump-2
+  (let [player-card (create-card :clubs :2)
+        remaining-cards (remove-card (create-deck) player-card)
+        games (map #(play-game [:a :b] 1 :a {:a [player-card] :b [%]} :spades) remaining-cards)]
+    (is (= 26 (count (filter #(= 1 (get % :a 0)) games))))))

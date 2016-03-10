@@ -100,7 +100,7 @@
   (let [order (take (count players) (drop-while #(not= % starting-player) (cycle players)))
         first-player (first order)
         ;_ (print first-player)
-        first-card  (-> players-cards (get first-player players-cards) (get trick-i))
+        first-card  (-> players-cards (get first-player) (get trick-i))
         requested-suit #{(:suit first-card)}]
     (loop [[player & more-players] (drop 1 order)
            winning-player-card [(first order) first-card]
@@ -217,7 +217,7 @@ and n_players = ?
 group by trump, position, cards, tricks" trump* cards* n-players])]
     (reduce (fn [acc {:keys [position tricks n total]}]
               (-> acc
-                  (assoc-in [:odds position tricks] (float (with-precision 3 (/ (BigDecimal. n) total))))
+                  (assoc-in [:odds position tricks] (float (with-precision 4 (/ (BigDecimal. n) total))))
                   (assoc-in [:sample-size position] total)))
             {:cards cards :trump trump :n-players n-players} results)))
 
