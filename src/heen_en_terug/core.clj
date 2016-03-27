@@ -185,6 +185,7 @@
                             :trump (encode-suit trump)
                             :position position
                             :cards (encode-cards cards)
+                            :sorted_cards (encode-cards (sort-by :id cards))
                             :tricks trick
                             :tricks_occurrences v
                             :total_occurrences total})
@@ -193,7 +194,15 @@
     (apply jdbc/insert! db :play_result entries))
   :ok)
 
+(comment use it like
+         (let [n-players 5
+               n-cards [1 2 3 4 5]
+               durations [60 120 180 180 180]]
+           (doall (map
+                    #(sample-all %1 %2 n-players) durations n-cards))))
+
 (defn sample-all [sample-time n-cards n-players]
+  (println "Sampling" n-players "players with" n-cards "cards for" sample-time "seconds")
   (let [deck (create-deck)
         players (create-players n-players)
         shuffler (create-shuffler deck sample-time)
