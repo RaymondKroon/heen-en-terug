@@ -9,4 +9,5 @@
                  [org.xerial/sqlite-jdbc "3.8.11.2"]]
   :main ^:skip-aot heen-en-terug.core
   :target-path "target/%s"
+  :jvm-opts ["-Xmx3g" "-server"]
   :profiles {:uberjar {:aot :all}})

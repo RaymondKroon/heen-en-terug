@@ -181,17 +181,21 @@
         entries (mapcat
                   (fn [[[trump position cards] {:keys [per-trick total]}]]
                     (map (fn [[trick v]]
-                           {:n_players n-players
-                            :trump (encode-suit trump)
-                            :position position
-                            :cards (encode-cards cards)
-                            :sorted_cards (encode-cards (sort-by :id cards))
-                            :tricks trick
-                            :tricks_occurrences v
-                            :total_occurrences total})
+                           [n-players
+                            (encode-suit trump)
+                            position
+                            (encode-cards cards)
+                            (encode-cards (sort-by :id cards))
+                            trick
+                            v
+                            total])
                          per-trick))
                   stats)]
-    (apply jdbc/insert! db :play_result entries))
+    (jdbc/execute! db
+                   (concat ["INSERT INTO play_result
+                  (n_players, trump, position, cards, sorted_cards, tricks, tricks_occurrences, total_occurrences)
+                  VALUES (?,?,?,?,?,?,?,?)"]
+                           entries) :multi? true :transaction? true))
   :ok)
 
 (comment use it like
